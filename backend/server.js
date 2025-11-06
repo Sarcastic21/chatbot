@@ -7,13 +7,19 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// CORS configuration - ONLY ONCE
 app.use(cors({
-  origin: "https://nextadhikarichatassistant.netlify.app",
+  origin: [
+    "https://nextadhikarichatassistant.netlify.app",
+    "http://localhost:3000", // For local development
+    "http://127.0.0.1:3000"  // Alternative localhost
+  ],
   methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
-app.use(cors());
+
 app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -193,6 +199,9 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Handle preflight requests
+app.options('*', cors());
+
 setInterval(() => {
   const now = Date.now();
   const oneHour = 60 * 60 * 1000;
@@ -212,4 +221,5 @@ app.listen(PORT, () => {
   console.log(`🤖 Using Gemini 2.5 Pro API`);
   console.log(`📚 Govt Exam Assistant Backend Ready!`);
   console.log(`🎯 Structured JSON response format enabled`);
+  console.log(`🌐 CORS enabled for: https://nextadhikarichatassistant.netlify.app`);
 });
