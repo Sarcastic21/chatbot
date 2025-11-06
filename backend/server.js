@@ -20,20 +20,72 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const conversationHistory = new Map();
 
-function generateRelatedQuestionsPrompt(mainQuestion) {
+function generateStructuredPrompt(question) {
   return `
-    Main Question: ${mainQuestion}
-    
-    Based on this question, generate 3 related questions that might be asked in government exams like UPSC, SSC, State PSCs, Banking, Railways, etc.
-    
-    Format the response as:
-    RELATED_QUESTIONS:
-    1. [First related question]
-    2. [Second related question] 
-    3. [Third related question]
-    
-    Make sure the questions are relevant to government exam patterns and cover different aspects of the topic.
+You are an expert government exam preparation assistant for Indian competitive exams (UPSC, SSC, Banking, State PSCs, Railways, Defense).
+
+For the question: "${question}"
+
+Provide a structured response in the following EXACT JSON format:
+
+{
+  "introduction": "Brief 2-3 line introduction about the topic and its significance",
+  "explanation": "Detailed explanation covering key concepts, provisions, historical context, current relevance",
+  "examples": "Relevant examples, case studies, or practical applications",
+  "numericalSolution": "If the question involves numerical problems, provide step-by-step solution here, otherwise leave empty",
+  "previousYearQuestions": [
+    {
+      "exam": "Exam Name (e.g., UPSC Civil Services)",
+      "year": "Year",
+      "question": "Exact question asked"
+    }
+  ],
+  "relatedTopics": ["Topic 1", "Topic 2", "Topic 3"],
+  "relatedQuestions": ["Question 1", "Question 2", "Question 3"]
+}
+
+IMPORTANT GUIDELINES:
+- Keep all content exam-focused and accurate
+- Include constitutional articles, amendments, dates where relevant
+- For previousYearQuestions, provide REAL questions from actual exams if known
+- If no specific PYQs are available, mention "This topic is frequently asked in [Exam Names]"
+- Make explanations clear and conceptual
+- Focus on frequently asked aspects in competitive exams
+- Ensure JSON format is strictly maintained
+- For numerical questions, show complete step-by-step solutions
   `;
+}
+
+function extractJSONFromText(text) {
+  try {
+    // Try to find JSON in the text
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    // If no JSON found, create a structured response from text
+    return {
+      introduction: "Introduction to the topic...",
+      explanation: text,
+      examples: "Relevant examples and case studies...",
+      numericalSolution: "",
+      previousYearQuestions: [],
+      relatedTopics: [],
+      relatedQuestions: []
+    };
+  } catch (error) {
+    console.error('JSON parsing error:', error);
+    // Fallback structure
+    return {
+      introduction: text.split('.')[0] + '.',
+      explanation: text,
+      examples: "",
+      numericalSolution: "",
+      previousYearQuestions: [],
+      relatedTopics: [],
+      relatedQuestions: []
+    };
+  }
 }
 
 app.post('/api/chat', async (req, res) => {
@@ -50,61 +102,64 @@ app.post('/api/chat', async (req, res) => {
     const history = conversationHistory.get(sessionId);
 
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash-exp", 
-      
+      model: "gemini-2.0-flash-exp",
     });
 
     const context = history.map(entry => 
-      `User: ${entry.question}\nAssistant: ${entry.answer}`
+      `User: ${entry.question}\nAssistant: ${JSON.stringify(entry.answer)}`
     ).join('\n\n');
 
+    const structuredPrompt = generateStructuredPrompt(message);
+
     const fullPrompt = `
-      You are an expert assistant for government exam preparation in India. Your role is to:
-      1. Answer questions clearly and concisely with exam-focused information
-      2. Provide information relevant to exams like UPSC, SSC, Banking, State PSCs, Railways, Defense
-      3. Include important facts, dates, concepts, and current affairs
-      4. Structure answers in an easy-to-understand format with bullet points where helpful
-      5. Focus on accuracy and relevance for competitive exams
-      
       ${context ? `Previous conversation:\n${context}\n\n` : ''}
+      ${structuredPrompt}
+      
       Current question: ${message}
       
-      Please provide a comprehensive answer that would help in government exam preparation.
+      Provide response in the exact JSON format specified above.
     `;
 
     const result = await model.generateContent(fullPrompt);
     const response = await result.response;
-    const answer = response.text();
+    const answerText = response.text();
 
-    const relatedQuestionsPrompt = generateRelatedQuestionsPrompt(message);
+    // Parse the structured response
+    const structuredResponse = extractJSONFromText(answerText);
+
+    // Generate additional related questions
+    const relatedQuestionsPrompt = `
+      Based on the topic: "${message}"
+      Generate 3 related exam questions in this format:
+      RELATED_QUESTIONS:
+      1. [Question 1]
+      2. [Question 2] 
+      3. [Question 3]
+    `;
+
     const relatedResult = await model.generateContent(relatedQuestionsPrompt);
     const relatedResponse = await relatedResult.response;
     const relatedText = relatedResponse.text();
 
-    let relatedQuestions = [];
+    let additionalRelatedQuestions = [];
     const lines = relatedText.split('\n');
     for (const line of lines) {
       if (line.match(/^\d+\.\s/)) {
         const question = line.replace(/^\d+\.\s/, '').trim();
         if (question) {
-          relatedQuestions.push(question);
+          additionalRelatedQuestions.push(question);
         }
       }
     }
 
-    if (relatedQuestions.length === 0) {
-      relatedQuestions = [
-        `Explain the key concepts related to ${message.substring(0, 50)}...`,
-        `What are the important facts about ${message.substring(0, 40)}... for government exams?`,
-        `How is ${message.substring(0, 40)}... relevant to current affairs?`
-      ];
+    // Merge with existing related questions
+    if (structuredResponse.relatedQuestions && structuredResponse.relatedQuestions.length === 0) {
+      structuredResponse.relatedQuestions = additionalRelatedQuestions.slice(0, 3);
     }
-
-    relatedQuestions = relatedQuestions.slice(0, 3);
 
     history.push({
       question: message,
-      answer: answer,
+      answer: structuredResponse,
       timestamp: new Date().toISOString()
     });
 
@@ -113,8 +168,8 @@ app.post('/api/chat', async (req, res) => {
     }
 
     res.json({
-      answer,
-      relatedQuestions,
+      answer: structuredResponse,
+      relatedQuestions: structuredResponse.relatedQuestions || additionalRelatedQuestions.slice(0, 3),
       sessionId,
       model: "gemini-2.5-pro"
     });
@@ -133,7 +188,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'Govt Exam Assistant API is running',
-    model: 'Gemini 2.5 Pro'
+    model: 'Gemini 2.5 Pro',
+    features: 'Structured JSON responses for exam preparation'
   });
 });
 
@@ -149,10 +205,11 @@ setInterval(() => {
       }
     }
   }
-}, 30 * 60 * 1000); 
+}, 30 * 60 * 1000);
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🤖 Using Gemini 2.5 Pro API`);
   console.log(`📚 Govt Exam Assistant Backend Ready!`);
+  console.log(`🎯 Structured JSON response format enabled`);
 });
